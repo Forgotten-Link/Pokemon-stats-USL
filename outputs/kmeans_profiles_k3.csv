@@ -1,6 +1,0 @@
-,HP,HP,Attack,Attack,Defense,Defense,Sp.Attack,Sp.Attack,Sp.Defense,Sp.Defense,Speed,Speed,Stat Total,Stat Total,Archetype
-,mean,std,mean,std,mean,std,mean,std,mean,std,mean,std,mean,std,mode
-Cluster_KMeans,,,,,,,,,,,,,,,
-0,82.6,26.43,78.4,22.69,78.68,23.46,101.65,23.12,91.09,25.13,81.48,28.34,513.9,64.85,Hybrids/Utility
-1,51.68,17.2,54.95,18.3,52.14,18.35,49.56,17.41,50.65,16.43,51.55,20.38,310.54,54.33,Balanced/Mixed
-2,82.44,22.44,108.14,20.47,94.22,28.88,64.1,18.61,74.61,19.46,73.36,28.65,496.86,59.77,Hybrids/Utility

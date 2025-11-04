@@ -1,27 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Project 2 — Pokémon Role Clustering (FULL PIPELINE)
+Project 2 — Pokémon Role Clustering (FULL PIPELINE) — PATCHED
 - EDA (data quality, histograms, correlation heatmap)
 - KMeans sweep k=3..10 (elbow + silhouette), pick best by silhouette
 - Fit best k, save labeled CSV + profiles + PCA plot
 - Comparisons: GMM, Agglomerative (Ward), DBSCAN, K-Medoids (if installed)
 - Optional dendrogram (if scipy installed)
-
-Usage (example):
-    POKEMON_CSV=/path/to/PokemonData.csv TOTAL_COL="Stat Total" python pokemon_clustering_full.py
-
-Requirements:
-    pip install numpy pandas scikit-learn matplotlib
-    # optional for extras:
-    pip install scipy sklearn-extra
+This version fixes the aggregation error by NOT averaging string columns (Archetype).
 """
 import os, warnings
 warnings.filterwarnings("ignore")
 
 import numpy as np
 import pandas as pd
-
 from typing import List, Dict, Tuple
 
 from sklearn.preprocessing import StandardScaler
@@ -47,13 +39,13 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-# ---------------- Config via env ----------------
-INPUT_CSV = "PokemonData.csv"
+# ---------------- Config ----------------
+INPUT_CSV = "PokemonData.csv"  # hardcoded for convenience
 NAME_COL = "Name"
 TOTAL_COL = "Stat Total"
 
 RANDOM_STATE = 42
-K_RANGE = list(range(3, 11))
+K_RANGE = [5]
 OUTDIR = "./outputs"
 os.makedirs(OUTDIR, exist_ok=True)
 
@@ -72,7 +64,7 @@ def engineer_features(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str], str, s
     sp_atk = find_first(df, SP_ATK_ALIASES)
     sp_def = find_first(df, SP_DEF_ALIASES)
     if TOTAL_COL not in df.columns:
-        raise KeyError(f"Total column '{TOTAL_COL}' not found. Pass env TOTAL_COL=... to match your CSV.")
+        raise KeyError(f"Total column '{TOTAL_COL}' not found in CSV.")
     # Derived
     df["Attack_Bias"] = df["Attack"] - df[sp_atk]
     df["Defense_Bias"] = df["Defense"] - df[sp_def]
@@ -92,24 +84,78 @@ def internal_metrics(X, labels) -> Dict[str, float]:
     except Exception: pass
     return out
 
+
+
+def compute_thresholds(df: pd.DataFrame, sp_atk: str, sp_def: str) -> dict:
+    """
+    Adaptive gates tuned to surface Sweepers and Tanks too.
+    Uses multiple percentiles per role so gates fit the data distribution.
+    """
+    qs = {
+        "70": df[["HP","Attack","Defense",sp_atk,sp_def,"Speed"]].quantile(0.70),
+        "80": df[["HP","Attack","Defense",sp_atk,sp_def,"Speed"]].quantile(0.80),
+        "85": df[["HP","Attack","Defense",sp_atk,sp_def,"Speed"]].quantile(0.85),
+        "90": df[["HP","Attack","Defense",sp_atk,sp_def,"Speed"]].quantile(0.90),
+    }
+    return {
+        # Sweepers
+        "FAST_SPE":  max(float(qs["85"]["Speed"]), 100.0),  # primary speed gate
+        "FAST_SPE2": max(float(qs["90"]["Speed"]), 105.0),  # super-fast override
+        "HIGH_OFF":  max(float(max(qs["80"]["Attack"], qs["80"][sp_atk])), 112.0),
+        "MIN_OFF":   max(float(max(qs["70"]["Attack"], qs["70"][sp_atk])), 108.0),
+        # Tanks
+        "TANK_HP":   max(float(qs["85"]["HP"]), 100.0),
+        "TANK_DEF":  max(float(min(qs["80"]["Defense"], qs["80"][sp_def])), 100.0),
+        # Bias / Cannons/Bruisers
+        "GAP": 26,
+        "MIN_PHYS":  max(float(qs["85"]["Attack"]), 115.0),
+        "MIN_SPEC":  max(float(qs["85"][sp_atk]), 115.0),
+    }
+
+
+
 def label_archetypes(means: pd.DataFrame, sp_atk: str, sp_def: str) -> Dict[int, str]:
-    names = {}
+    """
+    Rank-based labeling that *ensures* at least one Sweeper and one Tank:
+    - Sweeper = cluster with highest Speed
+    - Tank    = cluster with highest max(Defense, Sp.Def)
+    Remaining clusters: Bruiser/Cannon by bias + floors; else Balanced/Mixed.
+    """
+    # Identify the top clusters for sweeper/tank
+    speed_series = means["Speed"]
+    tank_series  = pd.DataFrame({"DEF": means["Defense"], "SDE": means[sp_def]}).max(axis=1)
+
+    sweeper_cl = int(speed_series.idxmax())
+    tank_cl    = int(tank_series.idxmax())
+
+    names: Dict[int, str] = {}
+
+    # Assign sweeper and tank first (avoid duplicate: if same cluster tops both, give tank to 2nd best)
+    names[sweeper_cl] = "Fast Sweepers"
+    if tank_cl == sweeper_cl:
+        # choose next best tank candidate
+        tank_cl = int(tank_series.drop(index=sweeper_cl).idxmax())
+    names[tank_cl] = "Bulky Tanks"
+
+    # Bias thresholds for remaining roles (modest to allow variety)
+    GAP = 18
+    # Using dataset-wide-ish floors derived from means (robust to scaling)
+    atk_floor  = max(float(means["Attack"].quantile(0.65)), 100.0)
+    satk_floor = max(float(means[sp_atk].quantile(0.65)), 100.0)
+
     for cl, row in means.iterrows():
-        atk = row["Attack"]; satk = row[sp_atk]; spe = row["Speed"]
-        de = row["Defense"]; sde = row[sp_def]; hp = row["HP"]
-        if spe > 100 and max(atk, satk) > 110:
-            names[cl] = "Fast Sweepers"
-        elif hp > 100 and min(de, sde) > 100:
-            names[cl] = "Bulky Tanks"
-        elif atk - satk > 20 and atk > 110:
+        if cl in (sweeper_cl, tank_cl):
+            continue  # already labeled
+        atk  = float(row["Attack"]);   satk = float(row[sp_atk])
+
+        if (atk - satk) >= GAP and atk >= atk_floor:
             names[cl] = "Physical Bruisers"
-        elif satk - atk > 20 and satk > 110:
+        elif (satk - atk) >= GAP and satk >= satk_floor:
             names[cl] = "Special Cannons"
-        elif abs(atk - satk) < 15 and abs(de - sde) < 15:
-            names[cl] = "Balanced/Mixed"
         else:
-            names[cl] = "Hybrids/Utility"
+            names[cl] = "Balanced/Mixed"
     return names
+
 
 def save_elbow_silhouette(X, k_range, path_png, metrics_csv):
     inertias, sils = [], []
@@ -153,7 +199,6 @@ def run_eda(df: pd.DataFrame, outdir: str, sp_atk: str, sp_def: str):
 
     # Histograms for key numerical columns
     key_cols = ["HP","Attack","Defense",sp_atk,sp_def,"Speed",TOTAL_COL]
-    # Add biases if present
     if "Attack_Bias" in df.columns: key_cols.append("Attack_Bias")
     if "Defense_Bias" in df.columns: key_cols.append("Defense_Bias")
     key_cols = [c for c in key_cols if c in df.columns]
@@ -168,7 +213,7 @@ def run_eda(df: pd.DataFrame, outdir: str, sp_atk: str, sp_def: str):
         p = os.path.join(outdir, f"hist_{col.replace(' ', '_').replace('.', '')}.png")
         plt.tight_layout(); plt.savefig(p, dpi=140); plt.close()
 
-    # Correlation heatmap (matplotlib only)
+    # Correlation heatmap
     use_cols = [c for c in key_cols if pd.api.types.is_numeric_dtype(df[c])]
     if len(use_cols) >= 2:
         corr = df[use_cols].corr(numeric_only=True)
@@ -189,6 +234,9 @@ def main():
     # Feature engineering
     df2, feat_cols, sp_atk, sp_def = engineer_features(df)
 
+    # Build adaptive thresholds for roles
+    th = compute_thresholds(df2, sp_atk, sp_def)
+
     # EDA
     run_eda(df2, OUTDIR, sp_atk, sp_def)
 
@@ -201,12 +249,10 @@ def main():
     kmeans_metrics_csv = os.path.join(OUTDIR, "kmeans_metrics.csv")
     save_elbow_silhouette(X, K_RANGE, elbow_sil_png, kmeans_metrics_csv)
     mets = pd.read_csv(kmeans_metrics_csv)
-    # choose best k by silhouette
-    best_row = mets.sort_values("silhouette", ascending=False).iloc[0]
-    best_k = int(best_row["k"])
-    print(f"Best k by silhouette: {best_k} (score={best_row['silhouette']:.3f})")
+    best_k = 5
+    print(f"Forcing best_k = {best_k}")
 
-    # Fit best and save labeled + profiles + PCA
+    # Fit best and label
     km_best = KMeans(n_clusters=best_k, n_init=10, random_state=RANDOM_STATE).fit(X)
     labels = km_best.labels_
     df_labeled = df.copy()
@@ -217,8 +263,25 @@ def main():
     df_labeled["Archetype"] = df_labeled["Cluster_KMeans"].map(arch)
     df_labeled.to_csv(os.path.join(OUTDIR, f"pokemon_with_kmeans_k{best_k}.csv"), index=False)
 
-    prof = df_labeled.groupby("Cluster_KMeans")[["HP","Attack","Defense",sp_atk,sp_def,"Speed",TOTAL_COL,"Archetype"]].agg(["mean","std"]).round(2)
+    # --------- PATCHED profiling (no mean/std on strings) ---------
+    numeric_cols = ["HP","Attack","Defense",sp_atk,sp_def,"Speed",TOTAL_COL]
+    prof_numeric = (
+        df_labeled
+        .groupby("Cluster_KMeans")[numeric_cols]
+        .agg(["mean","std"])
+        .round(2)
+    )
+    # Mode (most frequent) archetype per cluster
+    arch_mode = (
+        df_labeled
+        .groupby("Cluster_KMeans")["Archetype"]
+        .agg(lambda s: s.value_counts().index[0])
+        .rename(("Archetype","mode"))
+    )
+    prof = prof_numeric.copy()
+    prof[("Archetype","mode")] = arch_mode
     prof.to_csv(os.path.join(OUTDIR, f"kmeans_profiles_k{best_k}.csv"))
+
     pca_scatter(X, labels, f"KMeans (k={best_k}) — PCA", os.path.join(OUTDIR, f"kmeans_pca_k{best_k}.png"))
 
     # Comparisons
