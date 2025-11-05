@@ -1,0 +1,14 @@
+column,dtype,non_null,nulls,unique
+Number,int64,1025,0,1025
+Name,object,1025,0,1025
+Type 1,object,1025,0,18
+Type 2,object,526,499,18
+HP,int64,1025,0,107
+Attack,int64,1025,0,117
+Defense,int64,1025,0,108
+Sp.Attack,int64,1025,0,113
+Sp.Defense,int64,1025,0,103
+Speed,int64,1025,0,119
+Stat Total,int64,1025,0,207
+Attack_Bias,int64,1025,0,135
+Defense_Bias,int64,1025,0,111
