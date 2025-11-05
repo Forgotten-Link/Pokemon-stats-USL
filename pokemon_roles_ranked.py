@@ -20,7 +20,7 @@ NAME_COL = "Name"
 TOTAL_COL = "Stat Total"
 
 RANDOM_STATE = 42
-K_RANGE = [5]
+K_RANGE = range(5, 11)
 OUTDIR = "./outputs"
 os.makedirs(OUTDIR, exist_ok=True)
 
@@ -220,8 +220,9 @@ def main():
     kmeans_metrics_csv = os.path.join(OUTDIR, "kmeans_metrics.csv")
     save_elbow_silhouette(X, K_RANGE, elbow_sil_png, kmeans_metrics_csv)
     mets = pd.read_csv(kmeans_metrics_csv)
-    best_k = 5
-    print(f"Forcing best_k = {best_k}")
+    best_row = mets.loc[mets["silhouette"].idxmax()]
+    best_k = int(best_row["k"])
+    print(f"Best k chosen by silhouette score = {best_k} (score = {best_row['silhouette']:.3f})")
 
     # Fit best and label
     km_best = KMeans(n_clusters=best_k, n_init=10, random_state=RANDOM_STATE).fit(X)
