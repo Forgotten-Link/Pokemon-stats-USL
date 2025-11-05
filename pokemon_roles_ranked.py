@@ -20,8 +20,8 @@ NAME_COL = "Name"
 TOTAL_COL = "Stat Total"
 
 RANDOM_STATE = 42
-K_RANGE = range(5, 11)
-OUTDIR = "./outputs"
+K_RANGE = range(4, 11)
+OUTDIR = "./outputs-3"
 os.makedirs(OUTDIR, exist_ok=True)
 
 SP_ATK_ALIASES = ["Sp.Attack", "Sp Atk", "Sp. Atk", "SpAtk", "Sp_Attack", "Sp Attack"]
