@@ -1,8 +1,0 @@
-,HP,HP,Attack,Attack,Defense,Defense,Sp.Attack,Sp.Attack,Sp.Defense,Sp.Defense,Speed,Speed,Stat Total,Stat Total,Archetype
-,mean,std,mean,std,mean,std,mean,std,mean,std,mean,std,mean,std,mode
-Cluster_KMeans,,,,,,,,,,,,,,,
-0,68.69,22.47,91.21,25.89,123.3,27.81,58.44,22.87,70.04,30.87,48.99,24.15,460.66,74.47,Bulky Tanks
-1,71.96,17.96,80.21,19.39,65.71,13.62,78.65,19.67,68.67,13.7,84.59,26.76,449.8,46.81,Fast Sweepers
-2,49.29,14.56,51.73,17.24,48.69,15.55,47.42,16.53,48.37,14.99,49.59,19.02,295.09,43.9,Balanced/Mixed
-3,92.87,26.13,116.94,16.96,85.09,18.8,67.56,20.14,79.09,17.04,77.33,26.56,518.88,58.16,Physical Bruisers
-4,85.8,26.28,77.56,22.27,83.38,21.98,109.14,23.17,102.78,20.67,79.6,26.46,538.26,63.75,Special Cannons

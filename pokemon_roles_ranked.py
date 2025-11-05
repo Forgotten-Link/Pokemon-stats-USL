@@ -1,46 +1,21 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Project 2 — Pokémon Role Clustering (FULL PIPELINE) — PATCHED
-- EDA (data quality, histograms, correlation heatmap)
-- KMeans sweep k=3..10 (elbow + silhouette), pick best by silhouette
-- Fit best k, save labeled CSV + profiles + PCA plot
-- Comparisons: GMM, Agglomerative (Ward), DBSCAN, K-Medoids (if installed)
-- Optional dendrogram (if scipy installed)
-This version fixes the aggregation error by NOT averaging string columns (Archetype).
-"""
 import os, warnings
 warnings.filterwarnings("ignore")
-
 import numpy as np
 import pandas as pd
 from typing import List, Dict, Tuple
-
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans, DBSCAN, AgglomerativeClustering
 from sklearn.mixture import GaussianMixture
 from sklearn.metrics import silhouette_score, calinski_harabasz_score, davies_bouldin_score
-
-# Optional libs
-try:
-    from sklearn_extra.cluster import KMedoids
-    HAVE_SKLEARN_EXTRA = True
-except Exception:
-    HAVE_SKLEARN_EXTRA = False
-
-try:
-    from scipy.cluster.hierarchy import linkage, dendrogram
-    HAVE_SCIPY = True
-except Exception:
-    HAVE_SCIPY = False
-
+from scipy.cluster.hierarchy import linkage, dendrogram
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+HAVE_SKLEARN_EXTRA = False
+HAVE_SCIPY = True
 
-# ---------------- Config ----------------
-INPUT_CSV = "PokemonData.csv"  # hardcoded for convenience
+INPUT_CSV = "PokemonData.csv"  
 NAME_COL = "Name"
 TOTAL_COL = "Stat Total"
 
@@ -52,16 +27,17 @@ os.makedirs(OUTDIR, exist_ok=True)
 SP_ATK_ALIASES = ["Sp.Attack", "Sp Atk", "Sp. Atk", "SpAtk", "Sp_Attack", "Sp Attack"]
 SP_DEF_ALIASES = ["Sp.Defense", "Sp Def", "Sp. Def", "SpDef", "Sp_Defense", "Sp Defense"]
 
-# ---------------- Helpers ----------------
+# Finds candidate in the first column
 def find_first(df: pd.DataFrame, candidates: List[str]) -> str:
     for c in candidates:
         if c in df.columns:
             return c
     raise KeyError(f"None of the candidates present: {candidates}")
 
+#attack/defense bias then returns updated DataFrame
 def engineer_features(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str], str, str]:
     df = df.copy()
-    sp_atk = find_first(df, SP_ATK_ALIASES)
+    sp_atk = find_first(df, SP_ATK_ALIASES) 
     sp_def = find_first(df, SP_DEF_ALIASES)
     if TOTAL_COL not in df.columns:
         raise KeyError(f"Total column '{TOTAL_COL}' not found in CSV.")
@@ -71,6 +47,7 @@ def engineer_features(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str], str, s
     features = ["HP","Attack","Defense",sp_atk,sp_def,"Speed",TOTAL_COL,"Attack_Bias","Defense_Bias"]
     return df, features, sp_atk, sp_def
 
+#Silhouette score, Calinski-Harabasz Index, Davies-Bouldin Index
 def internal_metrics(X, labels) -> Dict[str, float]:
     uniq = np.unique(labels)
     out = {"silhouette": np.nan, "calinski_harabasz": np.nan, "davies_bouldin": np.nan}
@@ -87,20 +64,17 @@ def internal_metrics(X, labels) -> Dict[str, float]:
 
 
 def compute_thresholds(df: pd.DataFrame, sp_atk: str, sp_def: str) -> dict:
-    """
-    Adaptive gates tuned to surface Sweepers and Tanks too.
-    Uses multiple percentiles per role so gates fit the data distribution.
-    """
+    #Calculates our percentiles from 70-90th
     qs = {
         "70": df[["HP","Attack","Defense",sp_atk,sp_def,"Speed"]].quantile(0.70),
         "80": df[["HP","Attack","Defense",sp_atk,sp_def,"Speed"]].quantile(0.80),
         "85": df[["HP","Attack","Defense",sp_atk,sp_def,"Speed"]].quantile(0.85),
         "90": df[["HP","Attack","Defense",sp_atk,sp_def,"Speed"]].quantile(0.90),
     }
-    return {
+    return { #we define thresholds here 
         # Sweepers
-        "FAST_SPE":  max(float(qs["85"]["Speed"]), 100.0),  # primary speed gate
-        "FAST_SPE2": max(float(qs["90"]["Speed"]), 105.0),  # super-fast override
+        "FAST_SPE":  max(float(qs["85"]["Speed"]), 100.0),  
+        "FAST_SPE2": max(float(qs["90"]["Speed"]), 105.0),  
         "HIGH_OFF":  max(float(max(qs["80"]["Attack"], qs["80"][sp_atk])), 112.0),
         "MIN_OFF":   max(float(max(qs["70"]["Attack"], qs["70"][sp_atk])), 108.0),
         # Tanks
@@ -115,12 +89,7 @@ def compute_thresholds(df: pd.DataFrame, sp_atk: str, sp_def: str) -> dict:
 
 
 def label_archetypes(means: pd.DataFrame, sp_atk: str, sp_def: str) -> Dict[int, str]:
-    """
-    Rank-based labeling that *ensures* at least one Sweeper and one Tank:
-    - Sweeper = cluster with highest Speed
-    - Tank    = cluster with highest max(Defense, Sp.Def)
-    Remaining clusters: Bruiser/Cannon by bias + floors; else Balanced/Mixed.
-    """
+
     # Identify the top clusters for sweeper/tank
     speed_series = means["Speed"]
     tank_series  = pd.DataFrame({"DEF": means["Defense"], "SDE": means[sp_def]}).max(axis=1)
@@ -130,22 +99,22 @@ def label_archetypes(means: pd.DataFrame, sp_atk: str, sp_def: str) -> Dict[int,
 
     names: Dict[int, str] = {}
 
-    # Assign sweeper and tank first (avoid duplicate: if same cluster tops both, give tank to 2nd best)
+    # Assign sweeper and tank first 
     names[sweeper_cl] = "Fast Sweepers"
     if tank_cl == sweeper_cl:
         # choose next best tank candidate
         tank_cl = int(tank_series.drop(index=sweeper_cl).idxmax())
     names[tank_cl] = "Bulky Tanks"
 
-    # Bias thresholds for remaining roles (modest to allow variety)
+    # Bias thresholds for remaining roles 
     GAP = 18
-    # Using dataset-wide-ish floors derived from means (robust to scaling)
+    # Using dataset floors derived from means 
     atk_floor  = max(float(means["Attack"].quantile(0.65)), 100.0)
     satk_floor = max(float(means[sp_atk].quantile(0.65)), 100.0)
 
     for cl, row in means.iterrows():
         if cl in (sweeper_cl, tank_cl):
-            continue  # already labeled
+            continue  
         atk  = float(row["Attack"]);   satk = float(row[sp_atk])
 
         if (atk - satk) >= GAP and atk >= atk_floor:
@@ -158,6 +127,7 @@ def label_archetypes(means: pd.DataFrame, sp_atk: str, sp_def: str) -> Dict[int,
 
 
 def save_elbow_silhouette(X, k_range, path_png, metrics_csv):
+    #calculates our silhouette score
     inertias, sils = [], []
     rows = []
     for k in k_range:
@@ -176,6 +146,7 @@ def save_elbow_silhouette(X, k_range, path_png, metrics_csv):
     plt.tight_layout(); plt.savefig(path_png, dpi=160); plt.close()
 
 def pca_scatter(X, labels, title, path_png):
+    #scatter plot
     p = PCA(n_components=2, random_state=RANDOM_STATE)
     Z = p.fit_transform(X)
     plt.figure(figsize=(7,6))
@@ -197,7 +168,7 @@ def run_eda(df: pd.DataFrame, outdir: str, sp_atk: str, sp_def: str):
     with open(os.path.join(outdir, "eda_duplicates.txt"), "w", encoding="utf-8") as f:
         f.write(f"Duplicate rows (exact): {int(df.duplicated().sum())}\n")
 
-    # Histograms for key numerical columns
+    # Histograms 
     key_cols = ["HP","Attack","Defense",sp_atk,sp_def,"Speed",TOTAL_COL]
     if "Attack_Bias" in df.columns: key_cols.append("Attack_Bias")
     if "Defense_Bias" in df.columns: key_cols.append("Defense_Bias")
@@ -234,7 +205,7 @@ def main():
     # Feature engineering
     df2, feat_cols, sp_atk, sp_def = engineer_features(df)
 
-    # Build adaptive thresholds for roles
+    # Build adaptive thresholds
     th = compute_thresholds(df2, sp_atk, sp_def)
 
     # EDA
@@ -244,7 +215,7 @@ def main():
     scaler = StandardScaler()
     X = scaler.fit_transform(df2[feat_cols].values)
 
-    # KMeans sweep + plots + metrics
+    # KMeans sweep / plots / metrics
     elbow_sil_png = os.path.join(OUTDIR, "kmeans_elbow_silhouette.png")
     kmeans_metrics_csv = os.path.join(OUTDIR, "kmeans_metrics.csv")
     save_elbow_silhouette(X, K_RANGE, elbow_sil_png, kmeans_metrics_csv)
@@ -263,7 +234,7 @@ def main():
     df_labeled["Archetype"] = df_labeled["Cluster_KMeans"].map(arch)
     df_labeled.to_csv(os.path.join(OUTDIR, f"pokemon_with_kmeans_k{best_k}.csv"), index=False)
 
-    # --------- PATCHED profiling (no mean/std on strings) ---------
+    
     numeric_cols = ["HP","Attack","Defense",sp_atk,sp_def,"Speed",TOTAL_COL]
     prof_numeric = (
         df_labeled
@@ -271,7 +242,7 @@ def main():
         .agg(["mean","std"])
         .round(2)
     )
-    # Mode (most frequent) archetype per cluster
+    # Mode archetype per cluster
     arch_mode = (
         df_labeled
         .groupby("Cluster_KMeans")["Archetype"]
@@ -310,20 +281,11 @@ def main():
             m = internal_metrics(X, lab)
             nclust = len(set(lab)) - (1 if -1 in lab else 0)
             comp_rows.append({"method":"dbscan","k":nclust,"eps":eps,"min_samples":ms, **m})
-    # K-Medoids (optional)
-    if HAVE_SKLEARN_EXTRA:
-        for k in K_RANGE:
-            kmdo = KMedoids(n_clusters=k, random_state=RANDOM_STATE).fit(X)
-            lab = kmdo.labels_
-            m = internal_metrics(X, lab)
-            comp_rows.append({"method":"kmedoids","k":k, **m})
-            if k == best_k:
-                pca_scatter(X, lab, f"KMedoids (k={k}) — PCA", os.path.join(OUTDIR, f"kmedoids_pca_k{k}.png"))
 
     comps = pd.DataFrame(comp_rows)
     comps.to_csv(os.path.join(OUTDIR, "comparisons_metrics.csv"), index=False)
 
-    # Optional dendrogram
+    # dendrogram
     if HAVE_SCIPY:
         Z = linkage(X, method="ward")
         plt.figure(figsize=(9,4))
@@ -333,7 +295,7 @@ def main():
         plt.savefig(os.path.join(OUTDIR, "hierarchical_dendrogram.png"), dpi=160)
         plt.close()
 
-    print("All done. See ./outputs for EDA, metrics, plots, and labeled CSVs.")
+    print("See /outputs folder")
 
 if __name__ == "__main__":
     main()
